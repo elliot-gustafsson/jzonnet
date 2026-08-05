@@ -1,0 +1,9 @@
+[submodule "resources/jgosonnet"]
+	path = resources/jgosonnet
+	url = git@github.com:elliot-gustafsson/jgosonnet.git
+[submodule "resources/jsonnet"]
+	path = resources/jsonnet
+	url = git@github.com:google/jsonnet.git
+[submodule "resources/go-jsonnet"]
+	path = resources/go-jsonnet
+	url = git@github.com:google/go-jsonnet.git

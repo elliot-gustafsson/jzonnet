@@ -57,30 +57,32 @@ pub fn build(b: *std.Build) void {
     //
     // If neither case applies to you, feel free to delete the declaration you
     // don't need and to put everything under a single module.
+    const exe_mod = b.createModule(.{
+        // b.createModule defines a new module just like b.addModule but,
+        // unlike b.addModule, it does not expose the module to consumers of
+        // this package, which is why in this case we don't have to give it a name.
+        .root_source_file = b.path("src/main.zig"),
+        // Target and optimization levels must be explicitly wired in when
+        // defining an executable or library (in the root module), and you
+        // can also hardcode a specific target for an executable or library
+        // definition if desireable (e.g. firmware for embedded devices).
+        .target = target,
+        .optimize = optimize,
+        // List of modules available for import in source files part of the
+        // root module.
+        .imports = &.{
+            // Here "jzonnet" is the name you will use in your source code to
+            // import this module (e.g. `@import("jzonnet")`). The name is
+            // repeated because you are allowed to rename your imports, which
+            // can be extremely useful in case of collisions (which can happen
+            // importing modules from different packages).
+            .{ .name = "jzonnet", .module = mod },
+        },
+    });
+
     const exe = b.addExecutable(.{
         .name = "jzonnet",
-        .root_module = b.createModule(.{
-            // b.createModule defines a new module just like b.addModule but,
-            // unlike b.addModule, it does not expose the module to consumers of
-            // this package, which is why in this case we don't have to give it a name.
-            .root_source_file = b.path("src/main.zig"),
-            // Target and optimization levels must be explicitly wired in when
-            // defining an executable or library (in the root module), and you
-            // can also hardcode a specific target for an executable or library
-            // definition if desireable (e.g. firmware for embedded devices).
-            .target = target,
-            .optimize = optimize,
-            // List of modules available for import in source files part of the
-            // root module.
-            .imports = &.{
-                // Here "jzonnet" is the name you will use in your source code to
-                // import this module (e.g. `@import("jzonnet")`). The name is
-                // repeated because you are allowed to rename your imports, which
-                // can be extremely useful in case of collisions (which can happen
-                // importing modules from different packages).
-                .{ .name = "jzonnet", .module = mod },
-            },
-        }),
+        .root_module = exe_mod,
     });
 
     // This declares intent for the executable to be installed into the
@@ -153,4 +155,46 @@ pub fn build(b: *std.Build) void {
     //
     // Lastly, the Zig build system is relatively simple and self-contained,
     // and reading its source code will allow you to master it.
+
+    // This tells ZLS to type-check your app and all tests on save.
+    // Since we don't install or run them here, Zig automatically uses
+    // -fno-emit-bin to make the checks instantaneous.
+
+    const exe_check = b.addExecutable(.{
+        .name = "jzonnet",
+        .root_module = exe_mod,
+    });
+
+    // 4. Configure the check step (including your tests!)
+    const check_step = b.step("check", "Check if the app compiles");
+    check_step.dependOn(&exe_check.step);
+    check_step.dependOn(&mod_tests.step); // Ensures your tests are also checked on save
+    check_step.dependOn(&exe_tests.step);
+
+    // ---- AUTOMATICALLY CHECK ALL .ZIG FILES ----
+    // Walk the src/ directory and dynamically add a check step for every file.
+    var src_dir = b.build_root.handle.openDir(b.graph.io, "src", .{ .iterate = true }) catch return;
+    defer src_dir.close(b.graph.io);
+
+    var walker = src_dir.walk(b.allocator) catch return;
+    defer walker.deinit();
+
+    while (walker.next(b.graph.io) catch null) |entry| {
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.path, ".zig")) {
+            // Skip files we already checked above to avoid redundant work
+            if (std.mem.eql(u8, entry.path, "main.zig") or std.mem.eql(u8, entry.path, "root.zig")) {
+                continue;
+            }
+
+            const sub_path = b.fmt("src/{s}", .{entry.path});
+            const file_check = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path(sub_path),
+                    .target = target,
+                    .optimize = optimize,
+                }),
+            });
+            check_step.dependOn(&file_check.step);
+        }
+    }
 }

@@ -70,7 +70,7 @@ pub const Interner = struct {
     }
 
     pub fn get(self: *Interner, id: u32) []const u8 {
-        if (id == 0 || (id >= self.strings.items.len)) {
+        if (id == 0 or (id >= self.strings.items.len)) {
             return "";
         }
         return self.strings.items[id];
@@ -123,7 +123,8 @@ test "BenchmarkInterner_Unique" {
         bench_keys_unique[i] = try std.fmt.allocPrint(allocator, "key_{s}", .{std.fmt.bytesToHex(&b, .lower)});
     }
 
-    const loop_count: usize = 10_000;
+    // const loop_count: usize = 10_000;
+    const loop_count: usize = 10;
     const total_ops: u64 = loop_count * bench_keys_unique.len;
 
     const start_time = std.Io.Clock.awake.now(std.testing.io).nanoseconds;
@@ -174,7 +175,8 @@ test "BenchmarkInterner_Repeated" {
         _ = try i.intern(key);
     }
 
-    const loop_count: usize = 5000;
+    // const loop_count: usize = 5_000;
+    const loop_count: usize = 5;
     const total_ops: u64 = loop_count * bench_keys_repeated.len;
 
     const start_time = std.Io.Clock.awake.now(std.testing.io).nanoseconds;

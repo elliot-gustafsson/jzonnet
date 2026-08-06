@@ -1,2 +1,2 @@
 # jzonnet
-jsonnet in zig
+WIP jsonnet vm in zig

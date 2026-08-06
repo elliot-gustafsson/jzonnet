@@ -60,12 +60,17 @@ pub const Value = struct {
         return box(.Null, 0);
     }
 
-    // pub fn makeString(v: [] const u8) Value {
-    //     return box()
-    // }
+    pub fn makeString(a: std.mem.Allocator, v: []const u8) Value {
+        const ptr = a.alloc(u8, v.len) catch unreachable;
+        @memcpy(ptr, v);
+
+        // TODO: gör som go o spara len först som int, sen datan
+
+        return boxPtr(.String, ptr.ptr);
+    }
 
     pub fn makeArray(a: std.mem.Allocator, v: []const Value) !Value {
-        const s = try a.alloc(Value, v.len);
+        const s = a.alloc(Value, v.len) catch unreachable;
         @memcpy(s, v);
 
         return boxPtr(.Array, s.ptr);
@@ -106,6 +111,10 @@ pub const Value = struct {
     pub fn boolean(self: Value) bool {
         std.debug.assert(self.typeOf() == .Bool);
         return @as(u1, @trunc(self.bits)) == 1;
+    }
+
+    pub fn isNumber(self: Value) bool {
+        return self.bits >= float_threshold;
     }
 };
 

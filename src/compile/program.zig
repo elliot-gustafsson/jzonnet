@@ -7,6 +7,7 @@ const Interner = @import("../interner/interner.zig").Interner;
 const Compiler = @import("compile.zig").Compiler;
 const CallMeta = @import("compile.zig").CallMeta;
 const CompileError = @import("compile.zig").CompileError;
+const FunctionParamMeta = @import("compile.zig").FunctionParamMeta;
 
 pub const OpCode = enum(u8) {
     RETURN,
@@ -27,6 +28,8 @@ pub const OpCode = enum(u8) {
 
     POP_LOCALS_8,
     POP_LOCALS,
+
+    FUNCTION,
 
     BINARY_AND,
     BINARY_OR,
@@ -175,15 +178,56 @@ pub const Program = struct {
                         ip += 1;
                     }
 
-                    std.debug.print("{d:0>4}: CALL pos={d} named={d} [", .{ start_ip, pos_count, named_count });
-                    for (0..named_count) |i| {
+                    std.debug.print("{d:0>4}: CALL pos={d} named={d}", .{ start_ip, pos_count, named_count });
+
+                    if (named_count > 0) {
+                        std.debug.print(" [", .{});
+
+                        for (0..named_count) |i| {
+                            const name_id = std.mem.readInt(u32, self.bytecode[ip..][0..4], .little);
+                            ip += 4;
+                            if (i > 0) std.debug.print(", ", .{});
+                            const name = interner.get(name_id);
+                            std.debug.print("{s}", .{name});
+                        }
+                        std.debug.print("]", .{});
+                    }
+
+                    if (meta.tailstrict) {
+                        std.debug.print(" (tailstrict) ", .{});
+                    }
+
+                    std.debug.print("\n", .{});
+                },
+
+                .FUNCTION => {
+                    const jump_len = std.mem.readInt(u32, self.bytecode[ip..][0..4], .little);
+                    ip += 4;
+
+                    const args_count = std.mem.readInt(u32, self.bytecode[ip..][0..4], .little);
+                    ip += 4;
+
+                    std.debug.print("{d:0>4}: FUNCTION jump_len={d} args={d} (", .{ start_ip, jump_len, args_count });
+
+                    for (0..args_count) |i| {
                         const name_id = std.mem.readInt(u32, self.bytecode[ip..][0..4], .little);
                         ip += 4;
+
+                        const meta: FunctionParamMeta = @bitCast(self.bytecode[ip]);
+                        ip += 1;
+
                         if (i > 0) std.debug.print(", ", .{});
-                        const name = interner.get(name_id);
-                        std.debug.print("{s}", .{name});
+                        std.debug.print("{s}", .{interner.get(name_id)});
+
+                        if (meta.has_default) {
+                            const default_len = std.mem.readInt(u32, self.bytecode[ip..][0..4], .little);
+                            ip += 4;
+                            std.debug.print("=<default len={d}>", .{default_len});
+
+                            ip += default_len;
+                        }
                     }
-                    std.debug.print("]\n", .{});
+                    std.debug.print(")\n", .{});
                 },
             }
         }
@@ -323,6 +367,23 @@ test "compile apply" {
     const snippet =
         \\local asdf = 1;
         \\asdf(x=1)
+    ;
+
+    const p = try CompileSnippet(allocator, "test.jsonnet", snippet, interner);
+
+    p.disassemble(interner);
+}
+
+test "compile tailstrict apply " {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const interner = try Interner.init(allocator);
+
+    const snippet =
+        \\local asdf = function(x, y=2, z) x * y * z;
+        \\asdf(1, 2, 3) tailstrict
     ;
 
     const p = try CompileSnippet(allocator, "test.jsonnet", snippet, interner);

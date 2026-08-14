@@ -20,6 +20,8 @@ pub const CompileError = std.mem.Allocator.Error || lex.LexError || error{
     UnknownBinaryOperation,
     UndefinedVariable,
     PositionalArgAfterNamedArg,
+    ExpectedLeftParenAfterFunc,
+    ExpectedIndentifierInFunctionParam,
 };
 
 const bop_prec_map = std.StaticStringMap(i8).initComptime(.{
@@ -74,6 +76,11 @@ pub const CallMeta = packed struct(u8) {
     _padding: u5 = 0, // Reserved
 };
 
+pub const FunctionParamMeta = packed struct(u8) {
+    has_default: bool = false,
+    _padding: u7 = 0, // Reserved
+};
+
 pub const Compiler = struct {
     lex: lex.Lexer,
     name: []const u8,
@@ -109,6 +116,8 @@ pub const Compiler = struct {
             .Operator => try self.compileOperator(tok.data),
 
             .Local => try self.compileLocal(),
+
+            .Function => try self.compileFunction(),
         }
 
         while (true) {
@@ -225,6 +234,12 @@ pub const Compiler = struct {
         self.bytecode.appendSliceAssumeCapacity(&bytes);
     }
 
+    inline fn append_u32(self: *Compiler, v: u32) !void {
+        const bits = std.mem.nativeToLittle(u32, v);
+        const bytes = std.mem.toBytes(bits);
+        try self.bytecode.appendSlice(self.allocator, &bytes);
+    }
+
     fn getOpPrec(op: []const u8) i8 {
         return bop_prec_map.get(op) orelse 0;
     }
@@ -233,8 +248,6 @@ pub const Compiler = struct {
         const num = std.fmt.parseFloat(f64, data) catch {
             return CompileError.InvalidNumberLiteral;
         };
-
-        // TODO: make NUMBER_8 and NUMBER_16 for smaller integer values
 
         if (@trunc(num) == num) {
             if (num >= std.math.minInt(i8) and num <= std.math.maxInt(i8)) {
@@ -353,9 +366,91 @@ pub const Compiler = struct {
         try self.emit_u32(.POP_LOCALS, @intCast(binds_count));
     }
 
-    fn compileApply(self: *Compiler) CompileError!void {
+    fn compileFunction(self: *Compiler) CompileError!void {
+        // already consumed 'function'
 
-        // asdf.exex(asdf=2);
+        // function(x, y=10, z) z + y + z;
+
+        const parenLTok = try self.nextToken();
+        if (parenLTok.kind != .ParenL) {
+            return CompileError.ExpectedLeftParenAfterFunc;
+        }
+
+        const scope_start = self.locals.items.len;
+
+        const header_pos = self.bytecode.items.len;
+        try self.emit_u32(.FUNCTION, @as(u32, 0xFFFF)); // will patch with func len
+        try self.bytecode.appendSlice(self.allocator, &std.mem.toBytes(@as(u32, 0xFFFF))); // will patch with params num
+
+        const jump_idx = header_pos + @sizeOf(OpCode);
+        const arg_count_Idx = jump_idx + @sizeOf(u32);
+
+        var args_count: usize = 0;
+        while (true) {
+            const tok = try self.peek();
+            if (tok.kind == .ParenR) {
+                _ = try self.nextToken(); // consume right parentheses
+                break;
+            }
+
+            const identTok = try self.nextToken();
+            if (identTok.kind != .Identifier) {
+                return CompileError.ExpectedIndentifierInFunctionParam;
+            }
+
+            var required_append_size: usize = @sizeOf(u32) + @sizeOf(FunctionParamMeta);
+
+            const name_id = try self.interner.intern(identTok.data);
+            const bytes = std.mem.toBytes(std.mem.nativeToLittle(u32, name_id));
+
+            try self.locals.append(self.allocator, name_id);
+
+            const peek_tok = try self.peek();
+            const has_default = (peek_tok.kind == .Operator and std.mem.eql(u8, peek_tok.data, "="));
+            if (has_default) {
+                required_append_size += @sizeOf(u32); // track default expr len so it can be jumped over if not needed
+            }
+
+            try self.bytecode.ensureUnusedCapacity(self.allocator, required_append_size);
+            self.bytecode.appendSliceAssumeCapacity(&bytes);
+            self.bytecode.appendAssumeCapacity(@bitCast(FunctionParamMeta{ .has_default = has_default }));
+
+            args_count += 1;
+
+            if (has_default) {
+                _ = try self.nextToken(); // consume =
+                const default_size_idx = self.bytecode.items.len;
+                self.bytecode.appendSliceAssumeCapacity(&std.mem.toBytes(@as(u32, 0xFFFF)));
+                const default_start_idx = default_size_idx + @sizeOf(u32); // track were the default expr will start
+                try self.compileExpr(0);
+
+                const default_len = self.bytecode.items.len - default_start_idx;
+                std.mem.writeInt(u32, self.bytecode.items[default_size_idx..][0..4], @intCast(default_len), .little);
+            }
+
+            const next_token = try self.peek();
+            if (next_token.kind == .Comma) {
+                _ = try self.nextToken(); // consume ,
+                continue;
+            } else if (next_token.kind == .ParenR) {
+                _ = try self.nextToken(); // consume )
+                break;
+            } else {
+                return CompileError.UnexpectedToken;
+            }
+        }
+
+        try self.compileExpr(0);
+
+        const jump_len = self.bytecode.items.len - (jump_idx + @sizeOf(u32));
+        std.mem.writeInt(u32, self.bytecode.items[jump_idx..][0..4], @intCast(jump_len), .little);
+        std.mem.writeInt(u32, self.bytecode.items[arg_count_Idx..][0..4], @intCast(args_count), .little);
+
+        self.locals.items.len = scope_start;
+    }
+
+    fn compileApply(self: *Compiler) CompileError!void {
+        // already consumed '('
 
         var pos_count: usize = 0;
         var named_count: usize = 0;
@@ -408,12 +503,18 @@ pub const Compiler = struct {
                 _ = try self.nextToken(); // consume )
                 break;
             } else {
-                std.debug.print("\n\n{s}\n\n", .{@tagName(tok.kind)});
                 return CompileError.UnexpectedToken;
             }
         }
 
-        if (named_count == 0) {
+        var tailstrict = false;
+        const peek_tok = try self.peek();
+        if (peek_tok.kind == .TailStrict) {
+            _ = try self.nextToken(); // consume tailstrict
+            tailstrict = true;
+        }
+
+        if (named_count == 0 and !tailstrict) {
             switch (pos_count) {
                 0 => try self.emit(.CALL_0),
                 1 => try self.emit(.CALL_1),
@@ -421,18 +522,19 @@ pub const Compiler = struct {
                 3 => try self.emit(.CALL_3),
                 4 => try self.emit(.CALL_4),
                 5...255 => try self.emit_u8(.CALL_8, @intCast(pos_count)),
-                else => try self.emitComplexCall(pos_count, 0, &.{}),
+                else => try self.emitComplexCall(pos_count, 0, &.{}, false),
             }
         } else {
-            // complex call with named arguments
-            try self.emitComplexCall(pos_count, named_count, named_keys.items);
+            // complex call with named arguments and/or tailstrict
+            try self.emitComplexCall(pos_count, named_count, named_keys.items, tailstrict);
         }
     }
 
-    fn emitComplexCall(self: *Compiler, pos_count: usize, named_count: usize, named_keys: []const u32) !void {
+    fn emitComplexCall(self: *Compiler, pos_count: usize, named_count: usize, named_keys: []const u32, tailstrict: bool) !void {
         const meta = CallMeta{
             .pos_is_u32 = pos_count > std.math.maxInt(u8),
             .named_is_u32 = named_count > std.math.maxInt(u8),
+            .tailstrict = tailstrict,
         };
 
         const pos_len: usize = if (meta.pos_is_u32) @sizeOf(u32) else @sizeOf(u8);

@@ -5,6 +5,8 @@ pub const TokenKind = enum(u8) {
 
     Number,
     String,
+    StringVerbatim, // needs special handling in compile step
+    StringBlock, // needs special handling in compile step
     Identifier,
 
     BraceL,
@@ -83,101 +85,229 @@ pub const Token = struct {
     pos: usize,
 };
 
+pub const TokenList = struct {
+    tokens: []const TokenKind,
+    starts: []const u32,
+    ends: []const u32,
+};
+
 pub const Lexer = struct {
     data: []const u8,
     pos: usize,
     allocator: std.mem.Allocator,
+
+    tokens: std.ArrayList(TokenKind),
+    starts: std.ArrayList(u32),
+    ends: std.ArrayList(u32),
 
     error_context: ?struct {
         char: u8,
         pos: usize,
     } = null,
 
-    pub fn next(self: *Lexer) LexError!Token {
-        try self.consumeWhitespaceAndComments();
+    pub fn lex(self: *Lexer) LexError!TokenList {
+        while (true) {
+            try self.consumeWhitespaceAndComments();
 
-        if (self.pos >= self.data.len) {
-            return Token{ .kind = .EOF, .data = "", .pos = @as(u32, @truncate(self.pos)) };
+            if (self.pos >= self.data.len) {
+                break;
+            }
+
+            const start = self.pos;
+            const c = self.data[self.pos];
+            self.pos += 1;
+
+            switch (c) {
+                '{' => {
+                    try self.append(.BraceL, start, start + 1);
+                    continue;
+                },
+                '}' => {
+                    try self.append(.BraceR, start, start + 1);
+                    continue;
+                },
+                '[' => {
+                    try self.append(.BracketL, start, start + 1);
+                    continue;
+                },
+                ']' => {
+                    try self.append(.BracketR, start, start + 1);
+                    continue;
+                },
+                ',' => {
+                    try self.append(.Comma, start, start + 1);
+                    continue;
+                },
+                '.' => {
+                    try self.append(.Dot, start, start + 1);
+                    continue;
+                },
+                '(' => {
+                    try self.append(.ParenL, start, start + 1);
+                    continue;
+                },
+                ')' => {
+                    try self.append(.ParenR, start, start + 1);
+                    continue;
+                },
+                ';' => {
+                    try self.append(.Semicolon, start, start + 1);
+                    continue;
+                },
+                '$' => {
+                    try self.append(.Dollar, start, start + 1);
+                    continue;
+                },
+                '"', '\'' => {
+                    // return self.lexString(c, start);
+                    try self.lexString(c, start);
+                    continue;
+                },
+                '@' => {
+                    if (self.pos < self.data.len and (self.data[self.pos] == '"' or self.data[self.pos] == '\'')) {
+                        const quote = self.data[self.pos];
+                        self.pos += 1;
+                        // return self.lexVerbatimString(quote, start);
+                        try self.lexVerbatimString(quote, start);
+                        continue;
+                    }
+                    return LexError.UnexpectedAtSign;
+                },
+                '|' => {
+                    if (self.pos < self.data.len and (self.data[self.pos] == '|' and self.data[self.pos + 1] == '|')) {
+                        self.pos += 2;
+                        // TODO: handle block strings
+                        return LexError.TODOHandleBlockString;
+                    }
+                    self.pos -= 1;
+                    try self.lexOperator(start);
+                    continue;
+                },
+                else => {
+                    if (isDigit(c)) {
+                        self.pos -= 1;
+                        try self.lexNumber(start);
+                        continue;
+                    }
+                    if (isIdentFirst(c)) {
+                        self.pos -= 1;
+                        try self.lexIdent(start);
+                        continue;
+                    }
+                    if (isSymbol(c)) {
+                        self.pos -= 1;
+                        try self.lexOperator(start);
+                        continue;
+                    }
+
+                    self.error_context = .{
+                        .char = c,
+                        .pos = start,
+                    };
+
+                    return LexError.InvalidCharacter;
+                },
+            }
         }
 
-        const start = self.pos;
-        const c = self.data[self.pos];
-        self.pos += 1;
-
-        switch (c) {
-            '{' => {
-                return Token{ .kind = .BraceL, .data = "{", .pos = start };
-            },
-            '}' => {
-                return Token{ .kind = .BraceR, .data = "}", .pos = start };
-            },
-            '[' => {
-                return Token{ .kind = .BracketL, .data = "[", .pos = start };
-            },
-            ']' => {
-                return Token{ .kind = .BracketR, .data = "]", .pos = start };
-            },
-            ',' => {
-                return Token{ .kind = .Comma, .data = ",", .pos = start };
-            },
-            '.' => {
-                return Token{ .kind = .Dot, .data = ".", .pos = start };
-            },
-            '(' => {
-                return Token{ .kind = .ParenL, .data = "(", .pos = start };
-            },
-            ')' => {
-                return Token{ .kind = .ParenR, .data = ")", .pos = start };
-            },
-            ';' => {
-                return Token{ .kind = .Semicolon, .data = ";", .pos = start };
-            },
-            '$' => {
-                return Token{ .kind = .Dollar, .data = "$", .pos = start };
-            },
-            '"', '\'' => {
-                return self.lexString(c, start);
-            },
-            '@' => {
-                if (self.pos < self.data.len and (self.data[self.pos] == '"' or self.data[self.pos] == '\'')) {
-                    const quote = self.data[self.pos];
-                    self.pos += 1;
-                    return self.lexVerbatimString(quote, start);
-                }
-                return LexError.UnexpectedAtSign;
-            },
-            '|' => {
-                if (self.pos < self.data.len and (self.data[self.pos] == '|' and self.data[self.pos + 1] == '|')) {
-                    self.pos += 2;
-                    // TODO: handle block strings
-                    return LexError.TODOHandleBlockString;
-                }
-                self.pos -= 1;
-                return self.lexOperator(start);
-            },
-            else => {
-                if (isDigit(c)) {
-                    self.pos -= 1;
-                    return self.lexNumber(start);
-                }
-                if (isIdentFirst(c)) {
-                    self.pos -= 1;
-                    return self.lexIndent(start);
-                }
-                if (isSymbol(c)) {
-                    self.pos -= 1;
-                    return self.lexOperator(start);
-                }
-
-                self.error_context = .{
-                    .char = c,
-                    .pos = start,
-                };
-
-                return LexError.InvalidCharacter;
-            },
-        }
+        return TokenList{
+            .tokens = try self.tokens.toOwnedSlice(self.allocator),
+            .starts = try self.starts.toOwnedSlice(self.allocator),
+            .ends = try self.ends.toOwnedSlice(self.allocator),
+        };
     }
+
+    inline fn append(self: *Lexer, token: TokenKind, start: usize, end: usize) !void {
+        try self.tokens.append(self.allocator, token);
+        try self.starts.append(self.allocator, @as(u32, @truncate(start)));
+        try self.ends.append(self.allocator, @as(u32, @truncate(end)));
+    }
+
+    // pub fn next(self: *Lexer) LexError!Token {
+    //     try self.consumeWhitespaceAndComments();
+
+    //     if (self.pos >= self.data.len) {
+    //         return Token{ .kind = .EOF, .data = "", .pos = @as(u32, @truncate(self.pos)) };
+    //     }
+
+    //     const start = self.pos;
+    //     const c = self.data[self.pos];
+    //     self.pos += 1;
+
+    //     switch (c) {
+    //         '{' => {
+    //             return Token{ .kind = .BraceL, .data = "{", .pos = start };
+    //         },
+    //         '}' => {
+    //             return Token{ .kind = .BraceR, .data = "}", .pos = start };
+    //         },
+    //         '[' => {
+    //             return Token{ .kind = .BracketL, .data = "[", .pos = start };
+    //         },
+    //         ']' => {
+    //             return Token{ .kind = .BracketR, .data = "]", .pos = start };
+    //         },
+    //         ',' => {
+    //             return Token{ .kind = .Comma, .data = ",", .pos = start };
+    //         },
+    //         '.' => {
+    //             return Token{ .kind = .Dot, .data = ".", .pos = start };
+    //         },
+    //         '(' => {
+    //             return Token{ .kind = .ParenL, .data = "(", .pos = start };
+    //         },
+    //         ')' => {
+    //             return Token{ .kind = .ParenR, .data = ")", .pos = start };
+    //         },
+    //         ';' => {
+    //             return Token{ .kind = .Semicolon, .data = ";", .pos = start };
+    //         },
+    //         '$' => {
+    //             return Token{ .kind = .Dollar, .data = "$", .pos = start };
+    //         },
+    //         '"', '\'' => {
+    //             return self.lexString(c, start);
+    //         },
+    //         '@' => {
+    //             if (self.pos < self.data.len and (self.data[self.pos] == '"' or self.data[self.pos] == '\'')) {
+    //                 const quote = self.data[self.pos];
+    //                 self.pos += 1;
+    //                 return self.lexVerbatimString(quote, start);
+    //             }
+    //             return LexError.UnexpectedAtSign;
+    //         },
+    //         '|' => {
+    //             if (self.pos < self.data.len and (self.data[self.pos] == '|' and self.data[self.pos + 1] == '|')) {
+    //                 self.pos += 2;
+    //                 // TODO: handle block strings
+    //                 return LexError.TODOHandleBlockString;
+    //             }
+    //             self.pos -= 1;
+    //             return self.lexOperator(start);
+    //         },
+    //         else => {
+    //             if (isDigit(c)) {
+    //                 self.pos -= 1;
+    //                 return self.lexNumber(start);
+    //             }
+    //             if (isIdentFirst(c)) {
+    //                 self.pos -= 1;
+    //                 return self.lexIndent(start);
+    //             }
+    //             if (isSymbol(c)) {
+    //                 self.pos -= 1;
+    //                 return self.lexOperator(start);
+    //             }
+
+    //             self.error_context = .{
+    //                 .char = c,
+    //                 .pos = start,
+    //             };
+
+    //             return LexError.InvalidCharacter;
+    //         },
+    //     }
+    // }
 
     fn consumeWhitespaceAndComments(self: *Lexer) LexError!void {
         while (self.pos < self.data.len) {
@@ -227,7 +357,7 @@ pub const Lexer = struct {
         return;
     }
 
-    fn lexString(self: *Lexer, quoteType: u8, start: usize) LexError!Token {
+    fn lexString(self: *Lexer, quoteType: u8, start: usize) LexError!void {
         while (true) {
             const maybe_idx = std.mem.indexOfScalar(u8, self.data[self.pos..], quoteType);
             const idx = maybe_idx orelse {
@@ -253,11 +383,11 @@ pub const Lexer = struct {
                 break;
             }
         }
-        return Token{ .kind = .String, .data = self.data[start + 1 .. self.pos - 1], .pos = start };
+        try self.append(.String, start, self.pos);
     }
 
-    fn lexVerbatimString(self: *Lexer, quoteType: u8, start: usize) LexError!Token {
-        const strStart = self.pos;
+    fn lexVerbatimString(self: *Lexer, quoteType: u8, start: usize) LexError!void {
+        // const strStart = self.pos;
         while (true) {
             const maybe_idx = std.mem.indexOfScalar(u8, self.data[self.pos..], quoteType);
             const idx = maybe_idx orelse {
@@ -275,18 +405,20 @@ pub const Lexer = struct {
             break;
         }
 
-        var str_val = self.data[strStart .. self.pos - 1];
+        // var str_val = self.data[strStart .. self.pos - 1];
 
-        if (quoteType == '"' and std.mem.indexOf(u8, str_val, "\"\"") != null) {
-            str_val = try std.mem.replaceOwned(u8, self.allocator, str_val, "\"\"", "\"");
-        } else if (quoteType == '\'' and std.mem.indexOf(u8, str_val, "''") != null) {
-            str_val = try std.mem.replaceOwned(u8, self.allocator, str_val, "''", "'");
-        }
+        // if (quoteType == '"' and std.mem.indexOf(u8, str_val, "\"\"") != null) {
+        //     str_val = try std.mem.replaceOwned(u8, self.allocator, str_val, "\"\"", "\"");
+        // } else if (quoteType == '\'' and std.mem.indexOf(u8, str_val, "''") != null) {
+        //     str_val = try std.mem.replaceOwned(u8, self.allocator, str_val, "''", "'");
+        // }
 
-        return Token{ .kind = .String, .data = str_val, .pos = start };
+        // return Token{ .kind = .String, .data = str_val, .pos = start };
+
+        try self.append(.StringVerbatim, start, self.pos);
     }
 
-    fn lexNumber(self: *Lexer, start: usize) !Token {
+    fn lexNumber(self: *Lexer, start: usize) LexError!void {
         if (self.data[self.pos] == 0 and self.pos + 1 < self.data.len and !isDigit(self.data[self.pos + 1])) {
             return LexError.LeadingZeroNotAllowedInNumber;
         }
@@ -306,10 +438,12 @@ pub const Lexer = struct {
                 break;
             }
         }
-        return Token{ .kind = .Number, .data = self.data[start..self.pos], .pos = start };
+        // return Token{ .kind = .Number, .data = self.data[start..self.pos], .pos = start };
+
+        try self.append(.Number, start, self.pos);
     }
 
-    fn lexIndent(self: *Lexer, start: usize) !Token {
+    fn lexIdent(self: *Lexer, start: usize) LexError!void {
         while (self.pos < self.data.len and isIdent(self.data[self.pos])) {
             self.pos += 1;
         }
@@ -319,21 +453,25 @@ pub const Lexer = struct {
             if (tk == .In) {
                 return LexError.TODOHandleInSuperHere;
             }
-            return Token{ .kind = tk, .data = data, .pos = start };
+            try self.append(tk, start, self.pos);
+            return;
         }
-        return Token{ .kind = .Identifier, .data = data, .pos = start };
+        try self.append(.Identifier, start, self.pos);
+        return;
     }
 
-    fn lexOperator(self: *Lexer, start: usize) !Token {
+    fn lexOperator(self: *Lexer, start: usize) LexError!void {
         while (self.pos < self.data.len and isSymbol(self.data[self.pos])) {
             self.pos += 1;
         }
         const data = self.data[start..self.pos];
 
         if (std.mem.eql(u8, data, ":")) {
-            return Token{ .kind = .Colon, .data = data, .pos = start };
+            try self.append(.Colon, start, self.pos);
+            return;
         }
-        return Token{ .kind = .Operator, .data = data, .pos = start };
+        try self.append(.Operator, start, self.pos);
+        return;
     }
 
     fn isDigit(c: u8) bool {

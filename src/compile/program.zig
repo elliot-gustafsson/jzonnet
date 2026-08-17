@@ -239,15 +239,27 @@ pub const Program = struct {
 pub fn CompileSnippet(allocator: std.mem.Allocator, name: []const u8, data: []const u8, interner: *Interner) !*Program {
     const bytecode = try std.ArrayList(u8).initCapacity(allocator, 1024);
 
+    const lexer = try allocator.create(lex.Lexer);
+    lexer.* = lex.Lexer{
+        .allocator = allocator,
+        .data = data,
+        .pos = 0,
+
+        .tokens = try std.ArrayList(lex.TokenKind).initCapacity(allocator, 1024),
+        .starts = try std.ArrayList(u32).initCapacity(allocator, 1024),
+        .ends = try std.ArrayList(u32).initCapacity(allocator, 1024),
+    };
+
+    const tokenList = try lexer.lex();
+
     var c = Compiler{
-        .lex = lex.Lexer{
-            .data = data,
-            .pos = 0,
-            .allocator = allocator,
-        },
         .name = name,
+        .data = data,
         .bytecode = bytecode,
         .peekToken = null,
+
+        .token_list = tokenList,
+        .token_list_pos = 0,
 
         .locals = try std.ArrayList(u32).initCapacity(allocator, 128),
 
@@ -257,7 +269,7 @@ pub fn CompileSnippet(allocator: std.mem.Allocator, name: []const u8, data: []co
 
     try c.compileExpr(0);
 
-    const tok = try c.peek();
+    const tok = c.peek();
     if (tok.kind != .EOF) {
         std.debug.print("\n\n{s}\n\n", .{@tagName(tok.kind)});
         return CompileError.UnexpectedTokenAfterRootExpr;

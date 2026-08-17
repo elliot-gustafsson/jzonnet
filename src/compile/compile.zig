@@ -82,18 +82,26 @@ pub const FunctionParamMeta = packed struct(u8) {
 };
 
 pub const Compiler = struct {
-    lex: lex.Lexer,
+    // lex: lex.Lexer,
     name: []const u8,
+    data: []const u8,
     bytecode: std.ArrayList(u8),
     peekToken: ?lex.Token,
+
+    token_list: lex.TokenList,
+    token_list_pos: usize,
 
     locals: std.ArrayList(u32),
 
     interner: *Interner,
     allocator: std.mem.Allocator,
 
+    // pub fn lexData(self: *Compiler) CompileError!void {
+    //     self.token_list = self.lex.lex();
+    // }
+
     pub fn compileExpr(self: *Compiler, prec: i8) CompileError!void {
-        const tok = try self.nextToken();
+        const tok = self.nextToken();
         return self.compileToken(tok, prec);
     }
 
@@ -121,7 +129,7 @@ pub const Compiler = struct {
         }
 
         while (true) {
-            const peekTok = try self.peek();
+            const peekTok = self.peek();
 
             if (peekTok.kind == .EOF) {
                 break;
@@ -147,7 +155,7 @@ pub const Compiler = struct {
                 break;
             }
 
-            _ = try self.nextToken();
+            _ = self.nextToken();
 
             if (isBinary) {
                 try self.compileExpr(opPrec);
@@ -167,21 +175,60 @@ pub const Compiler = struct {
         }
     }
 
-    fn nextToken(self: *Compiler) !lex.Token {
+    fn nextToken(self: *Compiler) lex.Token {
         if (self.peekToken) |t| {
             self.peekToken = null;
             return t;
         }
-        return self.lex.next();
+
+        // return self.lex.next();
+        // TODO: dont create tokens here, just loop the kinds slice in the compile loop, fix later
+
+        if (self.token_list_pos >= self.token_list.tokens.len) {
+            return lex.Token{
+                .kind = .EOF,
+                .data = "",
+                .pos = self.token_list_pos,
+            };
+        }
+
+        const t = lex.Token{
+            .kind = self.token_list.tokens[self.token_list_pos],
+            .data = self.getTokenData(self.token_list_pos),
+            .pos = self.token_list.starts[self.token_list_pos],
+        };
+        self.token_list_pos += 1;
+        return t;
     }
 
-    pub fn peek(self: *Compiler) !lex.Token {
+    pub fn peek(self: *Compiler) lex.Token {
         if (self.peekToken) |t| {
             return t;
         }
-        const t = try self.lex.next();
+
+        if (self.token_list_pos >= self.token_list.tokens.len) {
+            return lex.Token{
+                .kind = .EOF,
+                .data = "",
+                .pos = self.token_list_pos,
+            };
+        }
+
+        // const t = try self.lex.next();
+        const t = lex.Token{
+            .kind = self.token_list.tokens[self.token_list_pos],
+            .data = self.getTokenData(self.token_list_pos),
+            .pos = self.token_list.starts[self.token_list_pos],
+        };
+        self.token_list_pos += 1;
         self.peekToken = t;
         return t;
+    }
+
+    pub inline fn getTokenData(self: *Compiler, index: usize) []const u8 {
+        const start = self.token_list.starts[index];
+        const end = self.token_list.ends[index];
+        return self.data[start..end];
     }
 
     inline fn emit(self: *Compiler, code: OpCode) !void {
@@ -320,7 +367,7 @@ pub const Compiler = struct {
         // try self.emit_u32(.LOCAL, 0); // emit 0, will patch when knowing actual count
 
         while (true) {
-            const indentifier_token = try self.nextToken();
+            const indentifier_token = self.nextToken();
 
             // std.debug.print("\n\n{s} {d}\n\n", .{ @tagName(indentifier_token.kind), indentifier_token.pos });
 
@@ -331,7 +378,7 @@ pub const Compiler = struct {
             const name_id = try self.interner.intern(indentifier_token.data);
             // try self.append_u32(name_id);
 
-            const eq_token = try self.nextToken();
+            const eq_token = self.nextToken();
             if (eq_token.kind != .Operator or !std.mem.eql(u8, eq_token.data, "=")) {
                 return CompileError.ExpectedEqualsInLocalBinding;
             }
@@ -341,12 +388,12 @@ pub const Compiler = struct {
 
             try self.compileExpr(0);
 
-            const tok = try self.peek();
+            const tok = self.peek();
             if (tok.kind == .Comma) {
-                _ = try self.nextToken();
+                _ = self.nextToken();
                 continue;
             } else if (tok.kind == .Semicolon) {
-                _ = try self.nextToken();
+                _ = self.nextToken();
                 break;
             }
 
@@ -371,7 +418,7 @@ pub const Compiler = struct {
 
         // function(x, y=10, z) z + y + z;
 
-        const parenLTok = try self.nextToken();
+        const parenLTok = self.nextToken();
         if (parenLTok.kind != .ParenL) {
             return CompileError.ExpectedLeftParenAfterFunc;
         }
@@ -387,13 +434,13 @@ pub const Compiler = struct {
 
         var args_count: usize = 0;
         while (true) {
-            const tok = try self.peek();
+            const tok = self.peek();
             if (tok.kind == .ParenR) {
-                _ = try self.nextToken(); // consume right parentheses
+                _ = self.nextToken(); // consume right parentheses
                 break;
             }
 
-            const identTok = try self.nextToken();
+            const identTok = self.nextToken();
             if (identTok.kind != .Identifier) {
                 return CompileError.ExpectedIndentifierInFunctionParam;
             }
@@ -405,7 +452,7 @@ pub const Compiler = struct {
 
             try self.locals.append(self.allocator, name_id);
 
-            const peek_tok = try self.peek();
+            const peek_tok = self.peek();
             const has_default = (peek_tok.kind == .Operator and std.mem.eql(u8, peek_tok.data, "="));
             if (has_default) {
                 required_append_size += @sizeOf(u32); // track default expr len so it can be jumped over if not needed
@@ -418,7 +465,7 @@ pub const Compiler = struct {
             args_count += 1;
 
             if (has_default) {
-                _ = try self.nextToken(); // consume =
+                _ = self.nextToken(); // consume =
                 const default_size_idx = self.bytecode.items.len;
                 self.bytecode.appendSliceAssumeCapacity(&std.mem.toBytes(@as(u32, 0xFFFF)));
                 const default_start_idx = default_size_idx + @sizeOf(u32); // track were the default expr will start
@@ -428,12 +475,12 @@ pub const Compiler = struct {
                 std.mem.writeInt(u32, self.bytecode.items[default_size_idx..][0..4], @intCast(default_len), .little);
             }
 
-            const next_token = try self.peek();
+            const next_token = self.peek();
             if (next_token.kind == .Comma) {
-                _ = try self.nextToken(); // consume ,
+                _ = self.nextToken(); // consume ,
                 continue;
             } else if (next_token.kind == .ParenR) {
-                _ = try self.nextToken(); // consume )
+                _ = self.nextToken(); // consume )
                 break;
             } else {
                 return CompileError.UnexpectedToken;
@@ -459,18 +506,18 @@ pub const Compiler = struct {
         defer named_keys.deinit(self.allocator);
 
         while (true) {
-            const tok = try self.peek();
+            const tok = self.peek();
             if (tok.kind == .ParenR) {
-                _ = try self.nextToken(); // consume right parentheses
+                _ = self.nextToken(); // consume right parentheses
                 break;
             }
 
             if (tok.kind == .Identifier) {
-                _ = try self.nextToken(); // consume identifier token
-                const next_tok = try self.peek();
+                _ = self.nextToken(); // consume identifier token
+                const next_tok = self.peek();
 
                 if (next_tok.kind == .Operator and std.mem.eql(u8, next_tok.data, "=")) {
-                    _ = try self.nextToken(); // consume =
+                    _ = self.nextToken(); // consume =
 
                     const name_id = try self.interner.intern(tok.data);
                     try named_keys.append(self.allocator, name_id);
@@ -496,11 +543,11 @@ pub const Compiler = struct {
                 pos_count += 1;
             }
 
-            const next_token = try self.peek();
+            const next_token = self.peek();
             if (next_token.kind == .Comma) {
-                _ = try self.nextToken(); // consume ,
+                _ = self.nextToken(); // consume ,
             } else if (next_token.kind == .ParenR) {
-                _ = try self.nextToken(); // consume )
+                _ = self.nextToken(); // consume )
                 break;
             } else {
                 return CompileError.UnexpectedToken;
@@ -508,9 +555,9 @@ pub const Compiler = struct {
         }
 
         var tailstrict = false;
-        const peek_tok = try self.peek();
+        const peek_tok = self.peek();
         if (peek_tok.kind == .TailStrict) {
-            _ = try self.nextToken(); // consume tailstrict
+            _ = self.nextToken(); // consume tailstrict
             tailstrict = true;
         }
 

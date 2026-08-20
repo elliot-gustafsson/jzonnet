@@ -96,16 +96,9 @@ pub const Compiler = struct {
     interner: *Interner,
     allocator: std.mem.Allocator,
 
-    // pub fn lexData(self: *Compiler) CompileError!void {
-    //     self.token_list = self.lex.lex();
-    // }
-
     pub fn compileExpr(self: *Compiler, prec: i8) CompileError!void {
         const tok = self.nextToken();
-        return self.compileToken(tok, prec);
-    }
 
-    pub fn compileToken(self: *Compiler, tok: lex.Token, prec: i8) CompileError!void {
         switch (tok.kind) {
             else => std.debug.panic(
                 "{s}:{d}: unexpected token '{s}' ({s})",
@@ -113,10 +106,7 @@ pub const Compiler = struct {
             ),
 
             .Number => try self.compileNumber(tok.data),
-            .String => {
-                const id = try self.interner.intern(tok.data);
-                try self.emit_u32(.STRING, id);
-            },
+            .String => try self.compileString(tok.data),
             .True => try self.emit(.TRUE),
             .False => try self.emit(.FALSE),
             .Null => try self.emit(.NULL),
@@ -126,6 +116,8 @@ pub const Compiler = struct {
             .Local => try self.compileLocal(),
 
             .Function => try self.compileFunction(),
+
+            .BracketL => try self.compileArray(),
         }
 
         while (true) {
@@ -291,6 +283,14 @@ pub const Compiler = struct {
         return bop_prec_map.get(op) orelse 0;
     }
 
+    fn isUnaryOp(data: []const u8) bool {
+        if (data.len != 1) return false;
+        return switch (data[0]) {
+            '!', '-', '+', '~' => true,
+            else => false,
+        };
+    }
+
     inline fn compileNumber(self: *Compiler, data: []const u8) !void {
         const num = std.fmt.parseFloat(f64, data) catch {
             return CompileError.InvalidNumberLiteral;
@@ -309,6 +309,12 @@ pub const Compiler = struct {
         }
 
         try self.emit_u64(.NUMBER, @as(u64, @bitCast(num)));
+    }
+
+    inline fn compileString(self: *Compiler, data: []const u8) !void {
+        // Slice off quotes
+        const id = try self.interner.intern(data[1..(data.len - 1)]);
+        try self.emit_u32(.STRING, id);
     }
 
     inline fn compileIndentifier(self: *Compiler, data: []const u8) !void {
@@ -528,9 +534,10 @@ pub const Compiler = struct {
                     if (named_count > 0) {
                         return CompileError.PositionalArgAfterNamedArg;
                     }
-
+                    self.token_list_pos -= 1;
+                    try self.compileExpr(0);
                     // if not named its need to be properly compiled
-                    try self.compileToken(tok, 0);
+                    // try self.compileToken(tok, 0);
 
                     pos_count += 1;
                 }
@@ -617,11 +624,60 @@ pub const Compiler = struct {
         }
     }
 
-    fn isUnaryOp(data: []const u8) bool {
-        if (data.len != 1) return false;
-        return switch (data[0]) {
-            '!', '-', '+', '~' => true,
-            else => false,
-        };
+    fn compileArray(self: *Compiler) CompileError!void {
+        const header_pos = self.bytecode.items.len;
+        try self.emit_u32(.ARRAY, @as(u32, 0xFFFF)); // will patch with array len
+        const count_idx = header_pos + @sizeOf(OpCode);
+
+        var size: usize = 0;
+        while (true) {
+            const tok = self.peek();
+            if (tok.kind == .BracketR) {
+                _ = self.nextToken();
+                break;
+            }
+
+            // _ = self.nextToken(); // consume =
+            // const default_size_idx = self.bytecode.items.len;
+            // self.bytecode.appendSliceAssumeCapacity(&std.mem.toBytes(@as(u32, 0xFFFF)));
+            // const default_start_idx = default_size_idx + @sizeOf(u32); // track were the default expr will start
+            // try self.compileExpr(0);
+
+            // const default_len = self.bytecode.items.len - default_start_idx;
+            // std.mem.writeInt(u32, self.bytecode.items[default_size_idx..][0..4], @intCast(default_len), .little);
+
+            // const elem_start_idx = self.bytecode.items.len;
+            try self.compileExpr(0);
+
+            // const elem_expr_len = self.bytecode.items.len - elem_start_idx;
+
+            size += 1;
+
+            const peek_tok = self.peek();
+            if (peek_tok.kind == .Comma) {
+                _ = self.nextToken();
+                continue;
+            } else if (peek_tok.kind == .BracketR) {
+                _ = self.nextToken();
+                break;
+            } else {
+                return CompileError.UnexpectedToken;
+            }
+        }
+
+        std.mem.writeInt(u32, self.bytecode.items[count_idx..][0..4], @intCast(size), .little);
+
+        // switch (size) {
+        //     0 => {
+        //         try self.emit(.ARRAY_0);
+        //         return;
+        //     },
+        //     1...255 => {
+        //         try self.emit_u8(.ARRAY_8, @as(u8, @truncate(size)));
+        //     },
+        //     else => {},
+        // }
+
+        // for (0..size) |i| {}
     }
 };

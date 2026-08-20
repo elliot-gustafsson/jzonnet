@@ -30,6 +30,7 @@ test "evaluate number" {
     const x = try allocator.create(vm.VM);
     x.* = .{
         .program = p,
+        .allocator = allocator,
     };
 
     p.disassemble(i);
@@ -57,6 +58,33 @@ test "evaluate locals" {
     const x = try allocator.create(vm.VM);
     x.* = .{
         .program = p,
+        .allocator = allocator,
+    };
+
+    p.disassemble(i);
+
+    const val = try x.execute(0);
+
+    try std.testing.expectEqual(@as(f64, 1.8), val.number());
+}
+
+test "evaluate array" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const i = try interner.Interner.init(allocator);
+
+    const snippet =
+        \\[1, 2, 3]
+    ;
+
+    const p = try program.CompileSnippet(allocator, "test.jsonnet", snippet, i);
+
+    const x = try allocator.create(vm.VM);
+    x.* = .{
+        .program = p,
+        .allocator = allocator,
     };
 
     p.disassemble(i);

@@ -47,6 +47,8 @@ const dispatch_table: [256]Handler = init_table: {
     table[@intFromEnum(OpCode.POP_LOCALS_8)] = opPopLocals_8;
     table[@intFromEnum(OpCode.POP_LOCALS)] = opPopLocals;
 
+    // table[@intFromEnum(OpCode.ARRAY)] = opArray;
+
     break :init_table table;
 };
 
@@ -75,6 +77,8 @@ pub const VM = struct {
     // The "Active" state, kept in registers for speed
     ip: usize = 0,
     bp: usize = 0,
+
+    allocator: std.mem.Allocator,
 
     // Returns the final value when execution completely finishes
     // pub fn run(self: *VM) !Value {
@@ -252,6 +256,27 @@ fn opPopLocals(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
     const next_op = next_pc[0];
     return @call(call_mode, dispatch_table[next_op], .{ next_pc, next_sp, ctx });
 }
+
+// fn opArray(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+//     const count = std.mem.readInt(u32, pc[1..5], .little);
+
+//     const res = try ctx.vm.allocator.alloc(Value, count);
+//     for (0..count) |i| {
+//         // const next_pc = pc + @sizeOf(OpCode) + @sizeOf(u32);
+//         // const next_op = next_pc[0];
+//         // try @call(call_mode, dispatch_table[next_op], .{ next_pc, next_sp, ctx });
+//     }
+
+//     const result = (sp - 1)[0];
+
+//     const next_sp = sp - count;
+//     (next_sp - 1)[0] = result;
+
+//     const next_pc = pc + @sizeOf(OpCode) + @sizeOf(u32);
+
+//     const next_op = next_pc[0];
+//     return @call(call_mode, dispatch_table[next_op], .{ next_pc, next_sp, ctx });
+// }
 
 pub const Visibility = enum(u2) {
     hidden = 0, // `::`

@@ -29,6 +29,8 @@ pub const OpCode = enum(u8) {
     POP_LOCALS_8,
     POP_LOCALS,
 
+    ARRAY,
+
     FUNCTION,
 
     BINARY_AND,
@@ -229,6 +231,13 @@ pub const Program = struct {
                     }
                     std.debug.print(")\n", .{});
                 },
+
+                .ARRAY => {
+                    const array_size = std.mem.readInt(u32, self.bytecode[ip..][0..4], .little);
+                    ip += 4;
+
+                    std.debug.print("{d:0>4}: ARRAY size={d}\n", .{ start_ip, array_size });
+                },
             }
         }
 
@@ -369,7 +378,7 @@ test "compile binary expr" {
     p.disassemble(interner);
 }
 
-test "compile apply" {
+test "compile apply" { 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -396,6 +405,22 @@ test "compile tailstrict apply " {
     const snippet =
         \\local asdf = function(x, y=2, z) x * y * z;
         \\asdf(1, 2, 3) tailstrict
+    ;
+
+    const p = try CompileSnippet(allocator, "test.jsonnet", snippet, interner);
+
+    p.disassemble(interner);
+}
+
+test "compile array" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const interner = try Interner.init(allocator);
+
+    const snippet =
+        \\[1, 2, 3]
     ;
 
     const p = try CompileSnippet(allocator, "test.jsonnet", snippet, interner);

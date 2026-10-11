@@ -1,19 +1,5 @@
 const std = @import("std");
 
-// pub const ValueType = enum(u8) {
-//     None,
-//     Null,
-//     String,
-//     StringConst,
-//     Number,
-//     Bool,
-//     Object,
-//     Array,
-//     Function,
-//     NativeFunction,
-//     Thunk,
-// };
-
 // Value represents a NaN-boxed 64-bit value.
 // Bit layout for non-float types:
 
@@ -41,7 +27,6 @@ pub const Value = struct {
         None,
         Null,
         String,
-        StringConst,
         Number,
         Bool,
         Object,
@@ -49,12 +34,26 @@ pub const Value = struct {
         Function,
         NativeFunction,
         Thunk,
+
+        pub fn string(self: Type) []const u8 {
+            return switch (self) {
+                .None => "none",
+                .String => "string",
+                .Null => "null",
+                .Number => "number",
+                .Bool => "boolean",
+                .Object => "object",
+                .Array => "array",
+                .Function, .NativeFunction => "function",
+                .Thunk => "thunk",
+            };
+        }
     };
 
-    pub const None: Value = Value(0);
-    pub const Null: Value = Value(Type.Null) << type_shift;
-    pub const False: Value = Value(Type.Bool) << type_shift;
-    pub const True: Value = Value(Type.Bool) << type_shift | 1;
+    pub const None: Value = .{ .bits = 0 };
+    pub const Null: Value = box(Type.Null, 0);
+    pub const False: Value = box(Type.Bool, 0);
+    pub const True: Value = box(Type.Bool, 1);
 
     fn box(t: Type, data: u32) Value {
         const tag = @as(u64, @intFromEnum(t)) << type_shift;
@@ -185,6 +184,11 @@ pub const Value = struct {
     pub fn isNumber(self: Value) bool {
         return self.bits >= float_threshold;
     }
+};
+
+pub const NamedValue = struct {
+    key: u32,
+    val: Value,
 };
 
 // --- Tests validating the layout ---

@@ -22,7 +22,7 @@ pub const Context = struct {
     target_fp: usize,
 };
 
-const Handler = *const fn (pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value;
+const Handler = *const fn (pc: [*]const u8, sp: [*]Value, ctx: Context) Value;
 
 const dispatch_table: [256]Handler = init_table: {
     var table: [256]Handler = undefined;
@@ -52,11 +52,14 @@ const dispatch_table: [256]Handler = init_table: {
     break :init_table table;
 };
 
-fn opInvalid(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+fn opInvalid(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     _ = sp;
     _ = ctx;
-    const c: OpCode = @enumFromInt(pc[0]);
-    std.debug.panic("Invalid opcode: 0x{x} ({s}) at PC: {*}\n", .{ pc[0], @tagName(c), pc });
+    if (std.enums.fromInt(OpCode, pc[0])) |c| {
+        std.debug.panic("Invalid opcode: 0x{x} ({s}) at PC: {*}\n", .{ pc[0], @tagName(c), pc });
+    } else {
+        std.debug.panic("Invalid opcode: 0x{x} (unknown) at PC: {*}\n", .{ pc[0], pc });
+    }
 }
 
 const CallFrame = struct {
@@ -67,6 +70,8 @@ const CallFrame = struct {
 
 pub const VM = struct {
     program: *Program, // Replaces prog.Instructions slice
+
+    err: ?VMError = null,
 
     stack: [1024]Value = undefined,
     stack_top: usize = 0,
@@ -108,11 +113,46 @@ pub const VM = struct {
 
         // The "loop" is initiated by manually firing the first instruction.
         // The handlers will tail-call each other until OP_RETURN is hit.
-        return @call(call_mode, dispatch_table[initial_op], .{ initial_pc, initial_sp, ctx });
+        const result = @call(call_mode, dispatch_table[initial_op], .{ initial_pc, initial_sp, ctx });
+        if (self.err) |err| {
+            return err;
+        }
+        return result;
     }
+
+    // pub fn fail(self: *VM, current_pc: [*]const u8, comptime fmt: []const u8, args: anytype) void {
+    //     self.err = error.RuntimeError;
+
+    //     var written: usize = 0;
+
+    //     // 1. Error header
+    //     const msg = std.fmt.bufPrint(self.err_buf[written..], "RUNTIME ERROR: " ++ fmt ++ "\n", args) catch return;
+    //     written += msg.len;
+
+    //     // 2. Immediate crash site
+    //     const cur_ip = @intFromPtr(current_pc) - @intFromPtr(self.program.bytecode.ptr);
+    //     const cur_loc = self.program.getLocation(cur_ip);
+    //     const cur_line = std.fmt.bufPrint(self.err_buf[written..], "\t{s}:{d}\t{s}\n", .{
+    //         cur_loc.file, cur_loc.line, cur_loc.func_name,
+    //     }) catch return;
+    //     written += cur_line.len;
+
+    //     // 3. Walk active caller frames (from innermost to outermost)
+    //     var i = self.fp;
+    //     while (i > 0) : (i -= 1) {
+    //         const frame = self.frames[i - 1];
+    //         const loc = self.program.getLocation(frame.ip);
+    //         const frame_line = std.fmt.bufPrint(self.err_buf[written..], "\t{s}:{d}\t{s}\n", .{
+    //             loc.file, loc.line, frame.func_name,
+    //         }) catch return;
+    //         written += frame_line.len;
+    //     }
+
+    //     self.err_msg = self.err_buf[0..written];
+    // }
 };
 
-fn opReturn(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+fn opReturn(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     _ = pc;
     _ = ctx;
     // Break the tail-call chain and return the final value to the host
@@ -128,7 +168,7 @@ fn opReturn(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
     // self.stack[self.stack_top - 1] = result;
 }
 
-fn opNumber_8(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+fn opNumber_8(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     const raw: i8 = @bitCast(pc[1]);
     const num: f64 = @floatFromInt(raw);
 
@@ -141,7 +181,7 @@ fn opNumber_8(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
     return @call(call_mode, dispatch_table[next_op], .{ next_pc, next_sp, ctx });
 }
 
-fn opNumber_16(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+fn opNumber_16(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     const raw = std.mem.readInt(u16, pc[1..3], .little);
     const num: f64 = @floatFromInt(@as(i16, @bitCast(raw)));
 
@@ -154,7 +194,7 @@ fn opNumber_16(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
     return @call(call_mode, dispatch_table[next_op], .{ next_pc, next_sp, ctx });
 }
 
-fn opNumber(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+fn opNumber(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     const raw = std.mem.readInt(u64, pc[1..9], .little);
 
     sp[0] = Value.makeNumber(@bitCast(raw));
@@ -168,7 +208,7 @@ fn opNumber(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
 
 // OP_ADD (0x02): Pops two values, adds them, pushes result.
 // Length: 1 byte.
-fn opBinaryAdd(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+fn opBinaryAdd(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     // 1. Execute logic (pop 2, push 1)
     const right = sp[-1];
     const left = sp[-2];
@@ -186,13 +226,16 @@ fn opBinaryAdd(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
     return @call(call_mode, dispatch_table[next_op], .{ next_pc, next_sp, ctx });
 }
 
-fn opBinaryMinus(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+fn opBinaryMinus(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     // 1. Execute logic (pop 2, push 1)
     const right = (sp - 1)[0];
     const left = (sp - 2)[0];
 
     if (!left.isNumber() or !right.isNumber()) {
-        return VMError.TypeMismatch;
+        ctx.vm.err = VMError.TypeMismatch;
+        // TODO: save err ctx?
+        // ctx.vm.err_msg = "....";
+        return Value.None;
     }
 
     const res = Value.makeNumber(left.number() - right.number());
@@ -205,7 +248,7 @@ fn opBinaryMinus(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
     return @call(call_mode, dispatch_table[next_op], .{ next_pc, next_sp, ctx });
 }
 
-fn opVar_8(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+fn opVar_8(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     const local_idx = pc[1];
 
     sp[0] = ctx.vm.stack[ctx.vm.bp + local_idx];
@@ -217,7 +260,7 @@ fn opVar_8(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
     return @call(call_mode, dispatch_table[next_op], .{ next_pc, next_sp, ctx });
 }
 
-fn opVar(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+fn opVar(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     const local_idx = std.mem.readInt(u32, pc[1..5], .little);
 
     sp[0] = ctx.vm.stack[ctx.vm.bp + local_idx];
@@ -229,7 +272,7 @@ fn opVar(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
     return @call(call_mode, dispatch_table[next_op], .{ next_pc, next_sp, ctx });
 }
 
-fn opPopLocals_8(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+fn opPopLocals_8(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     const count = pc[1];
 
     const result = (sp - 1)[0];
@@ -243,7 +286,7 @@ fn opPopLocals_8(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
     return @call(call_mode, dispatch_table[next_op], .{ next_pc, next_sp, ctx });
 }
 
-fn opPopLocals(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+fn opPopLocals(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     const count = std.mem.readInt(u32, pc[1..5], .little);
 
     const result = (sp - 1)[0];
@@ -257,7 +300,7 @@ fn opPopLocals(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
     return @call(call_mode, dispatch_table[next_op], .{ next_pc, next_sp, ctx });
 }
 
-// fn opArray(pc: [*]const u8, sp: [*]Value, ctx: Context) VMError!Value {
+// fn opArray(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
 //     const count = std.mem.readInt(u32, pc[1..5], .little);
 
 //     const res = try ctx.vm.allocator.alloc(Value, count);

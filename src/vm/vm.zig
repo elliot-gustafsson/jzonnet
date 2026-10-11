@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const Value = @import("../evaluator/value.zig").Value;
+const Value = @import("../value/value.zig").Value;
 const Program = @import("../compile/program.zig").Program;
 const OpCode = @import("../compile/program.zig").OpCode;
 

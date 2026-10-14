@@ -13,7 +13,7 @@ const std = @import("std");
 // - Bits 50-47: ValueType enum.
 // - Bits 46-0 : Payload (pointer info, interned string id, 1/0 for bools)
 // Note: lowest bits can be used for flags depending on the alignment
-pub const Value = struct {
+pub const Value = packed struct(u64) {
     bits: u64,
 
     const ptr_mask: u64 = 0x0000_FFFF_FFFF_FFFF;

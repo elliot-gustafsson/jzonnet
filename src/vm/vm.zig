@@ -17,9 +17,29 @@ pub const VMError = error{
     InvalidOpcode,
 };
 
-pub const Context = struct {
-    vm: *VM,
+// pub const Context = struct {
+//     vm: *VM,
+//     target_fp: usize,
+// };
+
+pub const Context = packed struct {
+    vm_ptr: usize, // Passed in rdx
     target_fp: usize,
+    self: Value = Value.None, // Passed in rcx
+    super_offset: u32 = 0, // Passed in r8 (low 32 bits)
+    depth: u32 = 0, // Passed in r8 (high 32 bits)
+    // (or target_fp: u32 if you also want it here)
+
+    pub inline fn init(v: *VM, target_fp: usize) Context {
+        return .{
+            .vm_ptr = @intFromPtr(v),
+            .target_fp = target_fp,
+        };
+    }
+
+    pub inline fn vm(self: Context) *VM {
+        return @ptrFromInt(self.vm_ptr);
+    }
 };
 
 const Handler = *const fn (pc: [*]const u8, sp: [*]Value, ctx: Context) Value;
@@ -96,10 +116,12 @@ pub const VM = struct {
     // }
 
     pub fn execute(self: *VM, target_fp: usize) VMError!Value {
-        const ctx = Context{
-            .vm = self,
-            .target_fp = target_fp,
-        };
+        // const ctx = Context{
+        //     .vm = self,
+        //     .target_fp = target_fp,
+        // };
+
+        const ctx = Context.init(self, target_fp);
 
         self.fp = 1;
         self.bp = 0;
@@ -113,7 +135,7 @@ pub const VM = struct {
 
         // The "loop" is initiated by manually firing the first instruction.
         // The handlers will tail-call each other until OP_RETURN is hit.
-        const result = @call(call_mode, dispatch_table[initial_op], .{ initial_pc, initial_sp, ctx });
+        const result = @call(.auto, dispatch_table[initial_op], .{ initial_pc, initial_sp, ctx });
         if (self.err) |err| {
             return err;
         }
@@ -232,7 +254,7 @@ fn opBinaryMinus(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     const left = (sp - 2)[0];
 
     if (!left.isNumber() or !right.isNumber()) {
-        ctx.vm.err = VMError.TypeMismatch;
+        ctx.vm().err = VMError.TypeMismatch;
         // TODO: save err ctx?
         // ctx.vm.err_msg = "....";
         return Value.None;
@@ -251,7 +273,7 @@ fn opBinaryMinus(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
 fn opVar_8(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     const local_idx = pc[1];
 
-    sp[0] = ctx.vm.stack[ctx.vm.bp + local_idx];
+    sp[0] = ctx.vm().stack[ctx.vm().bp + local_idx];
 
     const next_pc = pc + @sizeOf(OpCode) + @sizeOf(u8);
     const next_sp = sp + 1;
@@ -263,7 +285,7 @@ fn opVar_8(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
 fn opVar(pc: [*]const u8, sp: [*]Value, ctx: Context) Value {
     const local_idx = std.mem.readInt(u32, pc[1..5], .little);
 
-    sp[0] = ctx.vm.stack[ctx.vm.bp + local_idx];
+    sp[0] = ctx.vm().stack[ctx.vm().bp + local_idx];
 
     const next_pc = pc + @sizeOf(OpCode) + @sizeOf(u32);
     const next_sp = sp + 1;
